@@ -32,7 +32,6 @@ jobs:
         run: |
           set -euo pipefail
           branch="bot/upstream-main"
-          owner="${FORK_REPO%%/*}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
@@ -43,6 +42,11 @@ jobs:
           needs_push=false
 
           if branch_sha="$(git ls-remote --heads origin "refs/heads/${branch}" | cut -f1)" && [[ -n "${branch_sha}" ]]; then
+            closed_unmerged="$(gh pr list --repo "${FORK_REPO}" --state closed --base main --head "${branch}" --json mergedAt --jq '[.[] | select(.mergedAt == null)] | length')"
+            if [[ "${closed_unmerged}" != "0" ]]; then
+              echo "::notice::A prior sync PR was closed without merging; preserving its branch and not creating or updating another PR."
+              exit 0
+            fi
             git fetch --no-tags origin "refs/heads/${branch}:refs/remotes/origin/${branch}"
             git switch --create "${branch}" "refs/remotes/origin/${branch}"
           else
@@ -80,13 +84,7 @@ jobs:
             exit 0
           fi
 
-          closed_unmerged="$(gh pr list --repo "${FORK_REPO}" --state closed --base main --head "${owner}:${branch}" --json mergedAt --jq '[.[] | select(.mergedAt == null)] | length')"
-          if [[ "${closed_unmerged}" != "0" ]]; then
-            echo "::notice::A prior sync PR was closed without merging; leaving the bot branch untouched and not creating a replacement PR."
-            exit 0
-          fi
-
-          existing_pr_url="$(gh pr list --repo "${FORK_REPO}" --state open --base main --head "${owner}:${branch}" --json url --jq '.[0].url // ""')"
+          existing_pr_url="$(gh pr list --repo "${FORK_REPO}" --state open --base main --head "${branch}" --json url --jq '.[0].url // ""')"
           if [[ -n "${existing_pr_url}" ]]; then
             echo "Existing upstream sync PR retained and updated: ${existing_pr_url}"
           else
