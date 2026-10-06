@@ -40,25 +40,26 @@ jobs:
           git fetch --no-tags "https://github.com/${UPSTREAM_REPO}.git" refs/heads/main:refs/remotes/upstream/main
           main_sha="$(git rev-parse refs/remotes/origin/main)"
           upstream_sha="$(git rev-parse refs/remotes/upstream/main)"
+          needs_push=false
 
           if branch_sha="$(git ls-remote --heads origin "refs/heads/${branch}" | cut -f1)" && [[ -n "${branch_sha}" ]]; then
             git fetch --no-tags origin "refs/heads/${branch}:refs/remotes/origin/${branch}"
             git switch --create "${branch}" "refs/remotes/origin/${branch}"
-            current_sha="$(git rev-parse HEAD)"
-            if [[ "${current_sha}" != "${main_sha}" ]] && git merge-base --is-ancestor "${current_sha}" "${main_sha}"; then
-              echo "The sync branch is already contained in main; no update is needed."
-              exit 0
-            fi
           else
             git switch --create "${branch}" "refs/remotes/origin/main"
           fi
 
           if ! git merge-base --is-ancestor "${main_sha}" HEAD; then
-            if ! git merge --no-ff --no-edit "${main_sha}"; then
-              git merge --abort || true
-              echo "::notice::Fork main conflicts with the sync branch; preserving the remote branch and any open PR for manual resolution."
-              exit 0
+            if git merge-base --is-ancestor HEAD "${main_sha}"; then
+              git merge --ff-only "${main_sha}"
+            else
+              if ! git merge --no-ff --no-edit "${main_sha}"; then
+                git merge --abort || true
+                echo "::notice::Fork main conflicts with the sync branch; preserving the remote branch and any open PR for manual resolution."
+                exit 0
+              fi
             fi
+            needs_push=true
           fi
 
           if ! git merge-base --is-ancestor "${upstream_sha}" HEAD; then
@@ -67,12 +68,21 @@ jobs:
               echo "::notice::Upstream conflicts with the sync branch; preserving the remote branch and any open PR for manual resolution."
               exit 0
             fi
+            needs_push=true
+          fi
+
+          if [[ "${needs_push}" == "true" ]]; then
             git push origin "HEAD:refs/heads/${branch}"
           fi
 
-          ahead_count="$(git rev-list --count "refs/remotes/origin/main..HEAD")"
-          if [[ "${ahead_count}" == "0" ]]; then
-            echo "Fork main already contains upstream; no empty PR will be created."
+          if git diff --quiet refs/remotes/origin/main HEAD --; then
+            echo "Fork main already contains upstream changes; no empty PR will be created."
+            exit 0
+          fi
+
+          closed_unmerged="$(gh pr list --repo "${FORK_REPO}" --state closed --base main --head "${owner}:${branch}" --json mergedAt --jq '[.[] | select(.mergedAt == null)] | length')"
+          if [[ "${closed_unmerged}" != "0" ]]; then
+            echo "::notice::A prior sync PR was closed without merging; leaving the bot branch untouched and not creating a replacement PR."
             exit 0
           fi
 
